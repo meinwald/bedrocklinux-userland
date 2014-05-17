@@ -1,0 +1,282 @@
+# Support functions for installing CentOS with brg (BedRock Get)
+
+# Make sure all environment variables that are being used are set.
+
+sanity_check()
+{
+    if [ -z "$mirror" ]; then
+        mirror="http://mirror.centos.org/centos"
+    fi
+    if [ -z "$release" ]; then
+        release=6
+    fi
+    if [ -z "$arch" ]; then
+        echo "Architecture was not specified. This should not happen when run from brg, but " >&2
+        echo "defaulting to $(uname -m). Sleeping for 5 seconds in case you want to cancel (ctrl-c)." >&2
+        sleep 5
+        arch=$(uname -m)
+    fi
+    case "$arch" in
+        amd64|64|64-bit|x64)
+            arch="x86_64";;
+        32|32-bit|x86|i686)
+            arch="i386";;
+    esac
+    if [ -z "$output" ]; then
+        echo "Output directory was not specified. This definitely should not happen when running from brg." >&2
+        echo "Terminating, please set the \"output\" environment variable if you need to use this manually." >&2
+        exit 1
+    fi
+    #TODO: figure out/add tweaks
+    if [ -n "$tweak" ]; then
+        echo "Warning: Bedrock tweaks not yet available for CentOS" >&2
+    fi
+    #TODO: add update feature
+    if [ -n "$update" ]; then
+        echo "Warning: Update feature not yet supported for CentOS. Run a \"yum update\" manually when finished." >&2
+    fi
+    release_url="${mirror}/${release}/os/${arch}"
+
+    # rpm and its dependencies will be installed here, in order to install CentOS to the final destination
+    bootstrapdir="${output}/bootstrap"
+
+    # These are absolute paths within the bootstrap environment
+    workdir="/working" # packages are downloaded here
+    stage2="/stage2" # the final target system is installed here
+
+    sudo="" # Set this to "sudo" if you want to run most operations as a regular user (not functionality yet available through brg)
+}
+
+
+# There is no official listing of versions as far as I can tell, but the
+# releases tend to be numbered so it is easy enough to discern from the file
+# listing.
+
+list_release()
+{
+    sanity_check
+    mkdir -p -- "${bootstrapdir}${workdir}"
+    wget -q -O "${bootstrapdir}${workdir}/filelist.gz" "${mirror}/filelist.gz"
+    gunzip "${bootstrapdir}${workdir}/filelist.gz"
+    version_dirs=$(cut -d/ -f2 "${bootstrapdir}${workdir}/filelist"| sort -ur | grep '^[0-9][0-9.]*$')
+    for i in $version_dirs; do
+        if grep -q "^./${i}/os" "${bootstrapdir}${workdir}/filelist"; then
+            echo "${i}"
+        else
+            echo "${i} *"
+        fi
+    done
+    echo "Releases denoted with asterisks are likely only available in http://vault.centos.org/ and its mirrors."
+    echo 'Bare numbers such as "5" and "6" tend to point to the latest point releases.'
+}
+
+# While they haven't recently, it is possible architectures will vary from
+# release to release.  Listing all the release/architecture combinations in the
+# filelist on the mirror.
+
+list_arch()
+{
+    sanity_check
+    arch_dirs=$(wget -q -O - ${mirror}/filelist.gz | zcat | cut -d/ -f2-4 | sort -ur | grep '^[0-9][0-9.]*/os/')
+    for i in $arch_dirs; do
+            echo "${i}" | sed 's|/os/| - |'
+    done
+
+    echo "Note that more releases and architectures may be available on http://vault.centos.org/ ."
+}
+
+# Download the XML data for the repository that will be needed for locating
+# sqlite dependencies
+
+prep_repodata()
+{
+    wget -O repomd.xml "${release_url}/repodata/repomd.xml"
+    
+    # TODO: parse XML better, assuming less about formatting
+    primary_xml=$(awk -F \" -f- repomd.xml <<'EOF'
+        BEGIN {in_data=0;in_location=0} 
+        /<data/ && /type="primary"/ { in_data=1 } 
+        in_data && /<location/ {in_location=1} 
+        in_location && /href="[^"]+"/ {print $2;exit} 
+EOF
+    ) # ") # fix vim syntax highlighting
+    
+    wget -O primary.xml.gz "${release_url}/${primary_xml}"
+    printf -- "%s primary.xml.gz" $(basename "${primary_xml}" | cut -d- -f1) | sha256sum -c
+    gunzip primary.xml.gz
+    
+    mkdir -p -- "${bootstrapdir}${workdir}"
+    echo -n > "${bootstrapdir}${workdir}/installed"
+}
+
+# Extract packages provided by repo RPM path on stdin if they are not already
+# present in the file provided in the first argument. While installing, append
+# entries to that file. This is used in initial bootstrapping, so it does not
+# yet have rpm available, only rpm2cpio from busybox.
+
+extract_packages()
+{
+    installed_file="${bootstrapdir}${workdir}/installed"
+
+    while read rpm_href; do 
+        rpm=$(basename "${rpm_href}")
+        if ! grep -qFx "${rpm}" "${installed_file}"; then
+            echo "${rpm}" >> "${installed_file}"
+            wget -c -O "${bootstrapdir}${workdir}/${rpm}" "${release_url}/${rpm_href}"
+            rpm2cpio "${bootstrapdir}${workdir}/${rpm}" | (cd -- "${bootstrapdir}"; $sudo cpio -id)
+        fi
+    done
+}
+
+# Fecth the dependencies for sqlite, the first step in bootstrapping, and print
+# out the RPM URLS.  sqlite's dependent packages are hardcoded to keep them at
+# a minimum and avoid too much XML parsing in shell.
+
+fetch_sqlite_deps()
+{
+    # TODO: parse XML better, assuming less about formatting
+    while read pkg; do
+        rpm_href=$(awk -F \" -f- primary.xml <<EOF
+            BEGIN {in_package=0;in_location=0}
+            /<name>${pkg}<\/name>/ {in_package=1}
+            in_package && /<arch>/ && ! /<arch>(${arch}|noarch)<\/arch>/ {in_package=0}
+            in_package && /<location/ {in_location=1}
+            in_location && /href="[^"]+"/ {print \$2;exit}
+EOF
+        ) # ") # fix vim syntax highlighting
+        echo "${rpm_href}"
+    done <<EOF
+readline
+glibc
+basesystem
+glibc-common
+ncurses-libs
+libgcc
+nss-softokn-freebl
+ncurses-base
+setup
+tzdata
+filesystem
+libcap
+libattr
+sqlite
+EOF
+}
+
+# Download and uncompress the repository in sqlite format for later dependency
+# resolution.
+
+prep_sqlite_data()
+{
+    # TODO: parse XML better, assuming less about formatting
+    primary_db=$(awk -F \" -f- repomd.xml <<'EOF'
+        BEGIN {in_data=0;in_location=0} 
+        /<data/ && /type="primary_db"/ { in_data=1 } 
+        in_data && /<location/ {in_location=1} 
+        in_location && /href="[^"]+"/ {print $2;exit} 
+EOF
+    ) # ") #fix vim syntax highlighting
+    
+    wget -O primary.sqlite.bz2 "${release_url}/${primary_db}"
+    printf -- "%s primary.sqlite.bz2" $(basename "${primary_db}" | cut -d- -f1) | sha256sum -c
+    bunzip2 primary.sqlite.bz2
+    mv primary.sqlite "${bootstrapdir}/tmp"
+}
+
+# Returns an sqlite query to find dependencies for a package.
+# Takes one argument containing the package to be installed.
+
+get_deps_query()
+{
+
+
+setup="
+-- CentOS repos list both 32-bit and 64-bit dependencies though both are not needed. Additionally,
+-- the requires table's \"name\" column can refer both to specific files (found in the files table)
+-- and dependency names (found in the provides table). This creates a simpler table to search only
+-- including the necessary dependencies.
+create temp table reqs_merged as 
+    select requires.pkgKey as req,provides.pkgKey as dep from provides 
+        join requires on requires.name = provides.name
+        join packages on provides.pkgKey = packages.pkgKey
+        where packages.arch = '${arch}' or packages.arch = 'noarch'
+    union select requires.pkgKey,files.pkgKey from files 
+        join requires on requires.name = files.name
+        join packages on files.pkgKey = packages.pkgKey
+        where packages.arch = '${arch}' or packages.arch = 'noarch';
+
+create temp table result (pkgKey INTEGER PRIMARY KEY, name TEXT, location_href TEXT);
+
+-- Recursion is used in the following trigger in order to go through the entire dependency tree.
+PRAGMA recursive_triggers = on;
+
+create temp trigger res_update after insert on result when
+    -- Done once everything in the result table has dependencies already listed in the result table.
+    (select count(*) from reqs_merged 
+        where req in (select pkgKey from result)
+        and dep not in (select pkgKey from result)) > 0 
+    begin
+        -- \"ignore\" is needed because the \"select pkgKey from result\" subquery
+        -- runs before the recursive calls, causing duplicates
+        insert or ignore into result 
+        select distinct reqs_merged.dep,packages.name, packages.location_href from packages
+        join reqs_merged on reqs_merged.dep = packages.pkgKey 
+        join result on reqs_merged.req = result.pkgKey where reqs_merged.dep not in
+            (select pkgKey from result);
+     end;
+
+"
+
+package_clause="where name = '$1'"
+shift
+for package in "$@"; do
+    package_clause="${package_clause} or name = '$package'"
+done
+
+query="
+insert into result
+    select pkgKey,name,location_href from packages ${package_clause};
+
+select location_href from result;
+"
+
+echo "${setup} ${query}" 
+
+}
+
+# Run a query on primary.sqlite provided on stdin, returning the result on stdout
+sql_query()
+{
+    $sudo chroot "${bootstrapdir}" /usr/bin/sqlite3 /tmp/primary.sqlite 
+}
+
+# Fetch and install packages from rpm_hrefs provided on stdin to final destination,
+# using bootstrapped rpm binary.
+install_packages()
+{
+    fetch_log="${bootstrapdir}${workdir}/fetch.log"
+
+    while read rpm_href; do 
+        rpm=$(basename "${rpm_href}")
+        if ! grep -qFx "${rpm}" "${fetch_log}"; then
+            echo "${rpm}" >> "${fetch_log}"
+            wget -c -O "${workdir}/${rpm}" "${release_url}/${rpm_href}"
+        fi
+    done
+
+    # TODO: improve safety
+    $sudo chroot "${bootstrapdir}" sh -c "cd -- \"${workdir}\"; rpm --root "${stage2}" -ivh \$(cat fetch.log)"
+}
+
+
+acquire()
+{
+    sanity_check
+    prep_repodata
+    fetch_sqlite_deps | extract_packages
+    prep_sqlite_data
+    get_deps_query rpm | sql_query | extract_packages
+    mkdir -- "${bootstrapdir}${stage2}"
+    get_deps_query yum centos-release | sql_query | install_packages
+}
+

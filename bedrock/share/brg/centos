@@ -7,34 +7,41 @@ sanity_check()
     if [ -z "$mirror" ]; then
         mirror="http://mirror.centos.org/centos"
     fi
+
     if [ -z "$release" ]; then
         release=6
     fi
+
     if [ -z "$arch" ]; then
         echo "Architecture was not specified. This should not happen when run from brg, but " >&2
         echo "defaulting to $(uname -m). Sleeping for 5 seconds in case you want to cancel (ctrl-c)." >&2
         sleep 5
         arch=$(uname -m)
     fi
+
     case "$arch" in
         amd64|64|64-bit|x64)
             arch="x86_64";;
         32|32-bit|x86|i686)
             arch="i386";;
     esac
+
     if [ -z "$output" ]; then
         echo "Output directory was not specified. This definitely should not happen when running from brg." >&2
         echo "Terminating, please set the \"output\" environment variable if you need to use this manually." >&2
         exit 1
     fi
+
     #TODO: figure out/add tweaks
-    if [ -n "$tweak" ]; then
+    if [ -n "${tweak}" ]; then
         echo "Warning: Bedrock tweaks not yet available for CentOS" >&2
     fi
-    #TODO: add update feature
-    if [ -n "$update" ]; then
-        echo "Warning: Update feature not yet supported for CentOS. Run a \"yum update\" manually when finished." >&2
+
+    if [ -n "${section}" ]; then
+        echo "Additional section not available, as no single extra repository is commonly enabled on CentOS." >&2
+        echo "Please see http://wiki.centos.org/AdditionalResources/Repositories for suggestions." >&2
     fi
+
     release_url="${mirror}/${release}/os/${arch}"
 
     # rpm and its dependencies will be installed here, in order to install CentOS to the final destination
@@ -315,6 +322,14 @@ finalize()
     mv -- "${bootstrapdir}${stage2}/"* ${output}
     echo rm -r --  "${bootstrapdir}"
 }
+update()
+{
+       $sudo chroot "${output}" yum update
+}
+install_with_yum()
+{
+    echo "$@"| tr ',' '\0' | xargs -n 50 -0 $sudo chroot "${output}" yum install
+}
 
 
 acquire()
@@ -326,5 +341,11 @@ acquire()
     get_deps_query rpm | sql_query | extract_packages
     get_deps_query yum centos-release | sql_query | install_packages
     finalize
+    if [ -n "${update}" ]; then
+        update
+    fi
+    if [ -n "${packages}" ]; then
+        install_with_yum "${packages}"
+    fi
 }
 

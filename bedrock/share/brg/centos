@@ -90,10 +90,11 @@ list_arch()
 
 prep_repodata()
 {
-    wget -O repomd.xml "${release_url}/repodata/repomd.xml"
+    mkdir -p -- "${bootstrapdir}${workdir}"
+    wget -O "${bootstrapdir}${workdir}/repomd.xml" "${release_url}/repodata/repomd.xml"
     
     # TODO: parse XML better, assuming less about formatting
-    primary_xml=$(awk -F \" -f- repomd.xml <<'EOF'
+    primary_xml=$(awk -F \" -f- "${bootstrapdir}${workdir}/repomd.xml" <<'EOF'
         BEGIN {in_data=0;in_location=0} 
         /<data/ && /type="primary"/ { in_data=1 } 
         in_data && /<location/ {in_location=1} 
@@ -101,11 +102,11 @@ prep_repodata()
 EOF
     ) # ") # fix vim syntax highlighting
     
-    wget -O primary.xml.gz "${release_url}/${primary_xml}"
-    printf -- "%s primary.xml.gz" $(basename "${primary_xml}" | cut -d- -f1) | sha256sum -c
-    gunzip primary.xml.gz
+    wget -O "${bootstrapdir}${workdir}/primary.xml.gz" "${release_url}/${primary_xml}"
+    printf -- "%s ${bootstrapdir}${workdir}/primary.xml.gz" $(basename "${primary_xml}" | cut -d- -f1) | sha256sum -c
+    gunzip "${bootstrapdir}${workdir}/primary.xml.gz"
+    sed -i 's/></>\n</g' "${bootstrapdir}${workdir}/primary.xml"
     
-    mkdir -p -- "${bootstrapdir}${workdir}"
     echo -n > "${bootstrapdir}${workdir}/installed"
 }
 
@@ -128,15 +129,55 @@ extract_packages()
     done
 }
 
-# Fecth the dependencies for sqlite, the first step in bootstrapping, and print
+# Fetch the dependencies for sqlite, the first step in bootstrapping, and print
 # out the RPM URLS.  sqlite's dependent packages are hardcoded to keep them at
 # a minimum and avoid too much XML parsing in shell.
 
 fetch_sqlite_deps()
 {
+    case "$release" in
+        5*)
+            pkgs="
+basesystem
+bash
+filesystem
+glibc
+glibc-common
+info
+libgcc
+libsepol
+libtermcap
+mktemp
+ncurses
+readline
+setup
+sqlite
+termcap
+tzdata
+zlib
+" ;;
+        *)
+            pkgs="
+basesystem
+filesystem
+glibc
+glibc-common
+libattr
+libcap
+libgcc
+ncurses-base
+ncurses-libs                                                                                                                                                   
+nss-softokn-freebl
+readline
+setup
+sqlite
+tzdata
+" ;;
+    esac
+
     # TODO: parse XML better, assuming less about formatting
-    while read pkg; do
-        rpm_href=$(awk -F \" -f- primary.xml <<EOF
+    for pkg in $pkgs; do
+        rpm_href=$(awk -F \" -f- "${bootstrapdir}${workdir}/primary.xml" <<EOF
             BEGIN {in_package=0;in_location=0}
             /<name>${pkg}<\/name>/ {in_package=1}
             in_package && /<arch>/ && ! /<arch>(${arch}|noarch)<\/arch>/ {in_package=0}
@@ -145,22 +186,7 @@ fetch_sqlite_deps()
 EOF
         ) # ") # fix vim syntax highlighting
         echo "${rpm_href}"
-    done <<EOF
-readline
-glibc
-basesystem
-glibc-common
-ncurses-libs
-libgcc
-nss-softokn-freebl
-ncurses-base
-setup
-tzdata
-filesystem
-libcap
-libattr
-sqlite
-EOF
+    done 
 }
 
 # Download and uncompress the repository in sqlite format for later dependency
@@ -169,18 +195,22 @@ EOF
 prep_sqlite_data()
 {
     # TODO: parse XML better, assuming less about formatting
-    primary_db=$(awk -F \" -f- repomd.xml <<'EOF'
+    primary_db=$(awk -F \" -f- "${bootstrapdir}${workdir}/repomd.xml" <<'EOF'
         BEGIN {in_data=0;in_location=0} 
         /<data/ && /type="primary_db"/ { in_data=1 } 
         in_data && /<location/ {in_location=1} 
         in_location && /href="[^"]+"/ {print $2;exit} 
 EOF
     ) # ") #fix vim syntax highlighting
+
+    # CentOS5 repo has an sqlite file, but it isn't mentioned in the metadata...
+    if [ -z "${primary_db}" ]; then
+        primary_db=$(dirname "${primary_xml}")/$(basename "${primary_xml}" .xml.gz).sqlite.bz2
+    fi
     
-    wget -O primary.sqlite.bz2 "${release_url}/${primary_db}"
-    printf -- "%s primary.sqlite.bz2" $(basename "${primary_db}" | cut -d- -f1) | sha256sum -c
-    bunzip2 primary.sqlite.bz2
-    mv primary.sqlite "${bootstrapdir}/tmp"
+    wget -O "${bootstrapdir}${workdir}/primary.sqlite.bz2" "${release_url}/${primary_db}"
+    printf -- "%s ${bootstrapdir}${workdir}/primary.sqlite.bz2" $(basename "${primary_db}" | cut -d- -f1) | sha256sum -c
+    bunzip2 "${bootstrapdir}${workdir}/primary.sqlite.bz2"
 }
 
 # Returns an sqlite query to find dependencies for a package.
@@ -189,6 +219,7 @@ EOF
 get_deps_query()
 {
 
+# TODO: CentOS5-compatible sqlite...
 
 setup="
 -- CentOS repos list both 32-bit and 64-bit dependencies though both are not needed. Additionally,
@@ -247,7 +278,7 @@ echo "${setup} ${query}"
 # Run a query on primary.sqlite provided on stdin, returning the result on stdout
 sql_query()
 {
-    $sudo chroot "${bootstrapdir}" /usr/bin/sqlite3 /tmp/primary.sqlite 
+    $sudo chroot "${bootstrapdir}" /usr/bin/sqlite3 "${workdir}/primary.sqlite"
 }
 
 # Fetch and install packages from rpm_hrefs provided on stdin to final destination,
@@ -255,17 +286,34 @@ sql_query()
 install_packages()
 {
     fetch_log="${bootstrapdir}${workdir}/fetch.log"
+    echo -n > "${fetch_log}"
+    mkdir -- "${bootstrapdir}${stage2}"
 
     while read rpm_href; do 
+        # CentOS 5 repo still has CentOS 5.9 sqlite repodata though the XML was updated...
+        # primary.xml.gz        14-Oct-2013 18:52   1.3M
+        # primary.sqlite.bz2    09-Oct-2013 19:47   2.3M
+        # Hopefully this hack can be removed soon.
+        if [ "$rpm_href" = "CentOS/centos-release-notes-5.9-0.x86_64.rpm" ]; then
+            rpm_href="CentOS/centos-release-notes-5.10-0.x86_64.rpm"
+        fi
+
         rpm=$(basename "${rpm_href}")
         if ! grep -qFx "${rpm}" "${fetch_log}"; then
             echo "${rpm}" >> "${fetch_log}"
-            wget -c -O "${workdir}/${rpm}" "${release_url}/${rpm_href}"
+            wget -c -O "${bootstrapdir}${workdir}/${rpm}" "${release_url}/${rpm_href}"
         fi
     done
 
     # TODO: improve safety
     $sudo chroot "${bootstrapdir}" sh -c "cd -- \"${workdir}\"; rpm --root "${stage2}" -ivh \$(cat fetch.log)"
+}
+
+# Move target out to final location and clean up bootstrap directory
+finalize()
+{
+    mv -- "${bootstrapdir}${stage2}/"* ${output}
+    echo rm -r --  "${bootstrapdir}"
 }
 
 
@@ -276,7 +324,7 @@ acquire()
     fetch_sqlite_deps | extract_packages
     prep_sqlite_data
     get_deps_query rpm | sql_query | extract_packages
-    mkdir -- "${bootstrapdir}${stage2}"
     get_deps_query yum centos-release | sql_query | install_packages
+    finalize
 }
 

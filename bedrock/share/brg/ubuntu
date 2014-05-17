@@ -5,7 +5,7 @@
 # functions to other distros can pick-and-choose what is applicable.
 
 # source debian
-. /home/paradigm/.src/brg/debian
+. "$supportfuncs/debian"
 
 # override with ubuntu-specific things
 

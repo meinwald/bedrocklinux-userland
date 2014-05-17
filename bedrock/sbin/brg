@@ -271,7 +271,7 @@ then
 fi
 
 # get supporting functions corresponding to specified client
-. "$supportfuncs/$client"
+. "$supportfuncs/$distro"
 # This should include:
 # - list_release() to list available releases for the mirror
 # - list_arch(0 to list available architectures for the mirror
@@ -314,9 +314,9 @@ then
 	exit 1
 fi
 # ensure we can find distro-client-specific support functions
-if [ ! -r "$supportfuncs/$client" ]
+if [ ! -r "$supportfuncs/$distro" ]
 then
-	echo "Could not find support functions at $supportfuncs/$client"
+	echo "Could not find support functions at $supportfuncs/$distro"
 	exit 1
 fi
 

@@ -253,10 +253,6 @@ if echo "$output" | grep -q "^\."
 then
 	output="$(pwd)/$output"
 fi
-if [ -n "$client" ] && [ -z "$output" ]
-then
-	output="/bedrock/clients/$client"
-fi
 if [ -z "$arch" ]
 then
 	arch=$(uname -m)
@@ -301,6 +297,12 @@ then
 	echo "ERROR: Specify -c or -o, not both."
 	exit 1
 fi
+
+if [ -n "$client" ] && [ -z "$output" ]
+then
+	output="/bedrock/clients/$client"
+fi
+
 if [ -z "$client" ] && [ -z "$output" ]
 then
 	echo "ERROR: Either -c or -o must be specified"

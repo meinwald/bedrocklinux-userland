@@ -311,6 +311,7 @@ enable() {
 }
 
 list_release() {
+:
 }
 
 acquire() {

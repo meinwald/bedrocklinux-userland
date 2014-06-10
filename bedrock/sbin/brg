@@ -111,8 +111,12 @@ mount_chroot() {
 
 clean() {
 	echo "brg: Removing temporary files"
-	rm -r "$output/brg-tmp"
-	check "could not remove files at: $output/brg-tmp"
+    if [ -n "$brg_tmp" ]; then
+        rm -r "$brg_tmp"
+	    check "could not remove files at: $output/brg-tmp"
+    else
+        echo '$brg_tmp variable is empty, which is likely an issue with the client script. You may need to delete temporary files manually' >&2
+    fi
 }
 
 brconfig() {

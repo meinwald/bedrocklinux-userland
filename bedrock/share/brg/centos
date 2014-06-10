@@ -45,7 +45,7 @@ sanity_check()
     release_url="${mirror}/${release}/os/${arch}"
 
     # rpm and its dependencies will be installed here, in order to install CentOS to the final destination
-    bootstrapdir="${output}/bootstrap"
+    brg_tmp="${output}/bootstrap"
 
     # These are absolute paths within the bootstrap environment
     workdir="/working" # packages are downloaded here
@@ -62,12 +62,12 @@ sanity_check()
 list_release()
 {
     sanity_check
-    mkdir -p -- "${bootstrapdir}${workdir}"
-    wget -q -O "${bootstrapdir}${workdir}/filelist.gz" "${mirror}/filelist.gz"
-    gunzip "${bootstrapdir}${workdir}/filelist.gz"
-    version_dirs=$(cut -d/ -f2 "${bootstrapdir}${workdir}/filelist"| sort -ur | grep '^[0-9][0-9.]*$')
+    mkdir -p -- "${brg_tmp}${workdir}"
+    wget -q -O "${brg_tmp}${workdir}/filelist.gz" "${mirror}/filelist.gz"
+    gunzip "${brg_tmp}${workdir}/filelist.gz"
+    version_dirs=$(cut -d/ -f2 "${brg_tmp}${workdir}/filelist"| sort -ur | grep '^[0-9][0-9.]*$')
     for i in $version_dirs; do
-        if grep -q "^./${i}/os" "${bootstrapdir}${workdir}/filelist"; then
+        if grep -q "^./${i}/os" "${brg_tmp}${workdir}/filelist"; then
             echo "${i}"
         else
             echo "${i} *"
@@ -97,11 +97,11 @@ list_arch()
 
 prep_repodata()
 {
-    mkdir -p -- "${bootstrapdir}${workdir}"
-    wget -O "${bootstrapdir}${workdir}/repomd.xml" "${release_url}/repodata/repomd.xml"
+    mkdir -p -- "${brg_tmp}${workdir}"
+    wget -O "${brg_tmp}${workdir}/repomd.xml" "${release_url}/repodata/repomd.xml"
     
     # TODO: parse XML better, assuming less about formatting
-    primary_xml=$(awk -F \" -f- "${bootstrapdir}${workdir}/repomd.xml" <<'EOF'
+    primary_xml=$(awk -F \" -f- "${brg_tmp}${workdir}/repomd.xml" <<'EOF'
         BEGIN {in_data=0;in_location=0} 
         /<data/ && /type="primary"/ { in_data=1 } 
         in_data && /<location/ {in_location=1} 
@@ -109,12 +109,12 @@ prep_repodata()
 EOF
     ) # ") # fix vim syntax highlighting
     
-    wget -O "${bootstrapdir}${workdir}/primary.xml.gz" "${release_url}/${primary_xml}"
-    printf -- "%s ${bootstrapdir}${workdir}/primary.xml.gz" $(basename "${primary_xml}" | cut -d- -f1) | sha256sum -c
-    gunzip "${bootstrapdir}${workdir}/primary.xml.gz"
-    sed -i 's/></>\n</g' "${bootstrapdir}${workdir}/primary.xml"
+    wget -O "${brg_tmp}${workdir}/primary.xml.gz" "${release_url}/${primary_xml}"
+    printf -- "%s ${brg_tmp}${workdir}/primary.xml.gz" $(basename "${primary_xml}" | cut -d- -f1) | sha256sum -c
+    gunzip "${brg_tmp}${workdir}/primary.xml.gz"
+    sed -i 's/></>\n</g' "${brg_tmp}${workdir}/primary.xml"
     
-    echo -n > "${bootstrapdir}${workdir}/installed"
+    echo -n > "${brg_tmp}${workdir}/installed"
 }
 
 # Extract packages provided by repo RPM path on stdin if they are not already
@@ -124,14 +124,14 @@ EOF
 
 extract_packages()
 {
-    installed_file="${bootstrapdir}${workdir}/installed"
+    installed_file="${brg_tmp}${workdir}/installed"
 
     while read rpm_href; do 
         rpm=$(basename "${rpm_href}")
         if ! grep -qFx "${rpm}" "${installed_file}"; then
             echo "${rpm}" >> "${installed_file}"
-            wget -c -O "${bootstrapdir}${workdir}/${rpm}" "${release_url}/${rpm_href}"
-            rpm2cpio "${bootstrapdir}${workdir}/${rpm}" | (cd -- "${bootstrapdir}"; $sudo cpio -id)
+            wget -c -O "${brg_tmp}${workdir}/${rpm}" "${release_url}/${rpm_href}"
+            rpm2cpio "${brg_tmp}${workdir}/${rpm}" | (cd -- "${brg_tmp}"; $sudo cpio -id)
         fi
     done
 }
@@ -184,7 +184,7 @@ tzdata
 
     # TODO: parse XML better, assuming less about formatting
     for pkg in $pkgs; do
-        rpm_href=$(awk -F \" -f- "${bootstrapdir}${workdir}/primary.xml" <<EOF
+        rpm_href=$(awk -F \" -f- "${brg_tmp}${workdir}/primary.xml" <<EOF
             BEGIN {in_package=0;in_location=0}
             /<name>${pkg}<\/name>/ {in_package=1}
             in_package && /<arch>/ && ! /<arch>(${arch}|noarch)<\/arch>/ {in_package=0}
@@ -202,7 +202,7 @@ EOF
 prep_sqlite_data()
 {
     # TODO: parse XML better, assuming less about formatting
-    primary_db=$(awk -F \" -f- "${bootstrapdir}${workdir}/repomd.xml" <<'EOF'
+    primary_db=$(awk -F \" -f- "${brg_tmp}${workdir}/repomd.xml" <<'EOF'
         BEGIN {in_data=0;in_location=0} 
         /<data/ && /type="primary_db"/ { in_data=1 } 
         in_data && /<location/ {in_location=1} 
@@ -215,9 +215,9 @@ EOF
         primary_db=$(dirname "${primary_xml}")/$(basename "${primary_xml}" .xml.gz).sqlite.bz2
     fi
     
-    wget -O "${bootstrapdir}${workdir}/primary.sqlite.bz2" "${release_url}/${primary_db}"
-    printf -- "%s ${bootstrapdir}${workdir}/primary.sqlite.bz2" $(basename "${primary_db}" | cut -d- -f1) | sha256sum -c
-    bunzip2 "${bootstrapdir}${workdir}/primary.sqlite.bz2"
+    wget -O "${brg_tmp}${workdir}/primary.sqlite.bz2" "${release_url}/${primary_db}"
+    printf -- "%s ${brg_tmp}${workdir}/primary.sqlite.bz2" $(basename "${primary_db}" | cut -d- -f1) | sha256sum -c
+    bunzip2 "${brg_tmp}${workdir}/primary.sqlite.bz2"
 }
 
 # Returns an sqlite query to find dependencies for a package.
@@ -285,16 +285,16 @@ echo "${setup} ${query}"
 # Run a query on primary.sqlite provided on stdin, returning the result on stdout
 sql_query()
 {
-    $sudo chroot "${bootstrapdir}" /usr/bin/sqlite3 "${workdir}/primary.sqlite"
+    $sudo chroot "${brg_tmp}" /usr/bin/sqlite3 "${workdir}/primary.sqlite"
 }
 
 # Fetch and install packages from rpm_hrefs provided on stdin to final destination,
 # using bootstrapped rpm binary.
 install_packages()
 {
-    fetch_log="${bootstrapdir}${workdir}/fetch.log"
+    fetch_log="${brg_tmp}${workdir}/fetch.log"
     echo -n > "${fetch_log}"
-    mkdir -- "${bootstrapdir}${stage2}"
+    mkdir -- "${brg_tmp}${stage2}"
 
     while read rpm_href; do 
         # CentOS 5 repo still has CentOS 5.9 sqlite repodata though the XML was updated...
@@ -308,19 +308,19 @@ install_packages()
         rpm=$(basename "${rpm_href}")
         if ! grep -qFx "${rpm}" "${fetch_log}"; then
             echo "${rpm}" >> "${fetch_log}"
-            wget -c -O "${bootstrapdir}${workdir}/${rpm}" "${release_url}/${rpm_href}"
+            wget -c -O "${brg_tmp}${workdir}/${rpm}" "${release_url}/${rpm_href}"
         fi
     done
 
     # TODO: improve safety
-    $sudo chroot "${bootstrapdir}" sh -c "cd -- \"${workdir}\"; rpm --root "${stage2}" -ivh \$(cat fetch.log)"
+    $sudo chroot "${brg_tmp}" sh -c "cd -- \"${workdir}\"; rpm --root "${stage2}" -ivh \$(cat fetch.log)"
 }
 
 # Move target out to final location and clean up bootstrap directory
 finalize()
 {
-    mv -- "${bootstrapdir}${stage2}/"* ${output}
-    echo rm -r --  "${bootstrapdir}"
+    mv -- "${brg_tmp}${stage2}/"* ${output}
+    rm -r --  "${brg_tmp}"
 }
 update()
 {

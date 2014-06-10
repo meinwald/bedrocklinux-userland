@@ -42,14 +42,15 @@ check_mirror() {
 
 setup() {
 	echo "brg: Setup"
-	mkdir -p "$output/brg-tmp/brg-client/var/cache/apt/archives/"
+    brg_tmp="$output/brg-tmp"
+	mkdir -p "$brg_tmp/brg-client/var/cache/apt/archives/"
 }
 
 get_packages_file() {
 	echo "brg: Getting \"Packages\" file"
-	wget "$mirror/dists/$release/main/binary-$arch/Packages.bz2" -O "$output/brg-tmp/Packages.bz2"
+	wget "$mirror/dists/$release/main/binary-$arch/Packages.bz2" -O "$brg_tmp/Packages.bz2"
 	check "Could not get Packages.bz2 from $mirror/dists/$release/main/binary-$arch/Packages.bz2"
-	cd "$output/brg-tmp"
+	cd "$brg_tmp"
 	bunzip2 Packages.bz2
 	check "Could not get decompress $output/Packages.bz2"
 }
@@ -59,7 +60,7 @@ calculate_dependencies() {
 
 	echo "brg: Calculating dependencies" | cat >&2
 
-	awk -F"[, ]" -v"packages_file=$output/brg-tmp/Packages" -v"packages=$@" '
+	awk -F"[, ]" -v"packages_file=$brg_tmp/Packages" -v"packages=$@" '
 
 		# get a list of the dependencies for a given package can not return
 		# array, but there is no scoping, so use the provided "depends"
@@ -187,12 +188,12 @@ get_package_url() {
 		print $2
 		exit
 	}
-	' $output/brg-tmp/Packages
+	' "$brg_tmp/Packages"
 }
 
 get_packages() {
 	echo "brg: Downloading packages"
-	cd "$output/brg-tmp/brg-client/var/cache/apt/archives/"
+	cd "$brg_tmp/brg-client/var/cache/apt/archives/"
 	for package in "$@"
 	do
 		filepath="$(get_package_url $package)"
@@ -208,8 +209,8 @@ get_packages() {
 
 expand_packages() {
 	echo "brg: Expanding packages"
-	cd $output/brg-tmp
-	for package in "$output"/brg-tmp/brg-client/var/cache/apt/archives/*.deb
+	cd "$brg_tmp"
+	for package in "$brg_tmp"/brg-client/var/cache/apt/archives/*.deb
 	do
 		echo "$package"
 		ar x $package
@@ -226,31 +227,31 @@ expand_packages() {
 		rm data.tar
 		rm control.tar.gz
 	done
-	if ! [ -e "$output"/brg-tmp/bin/sh ]
+	if ! [ -e "$brg_tmp"/bin/sh ]
 	then
 		# the symlink will be correct the chroot
-		ln -s /bin/dash $output/brg-tmp/bin/sh
+		ln -s /bin/dash "$brg_tmp/bin/sh"
 	fi
 }
 
 install() {
 	echo "brg: Installing"
-	mount_chroot "$output/brg-tmp" /usr/sbin/debootstrap "--variant=minbase" "$release" "/brg-client" "$mirror"
+	mount_chroot "$brg_tmp" /usr/sbin/debootstrap "--variant=minbase" "$release" "/brg-client" "$mirror"
 	check "debootstrap failed"
 }
 
 move() {
 	echo "brg: Moving into place"
 	# ensure no mount points left over somehow
-	umount "$output"/brg-tmp/brg-client/dev/pts >/dev/null 2>&1
-	umount "$output"/brg-tmp/brg-client/dev     >/dev/null 2>&1
-	umount "$output"/brg-tmp/brg-client/sys     >/dev/null 2>&1
-	umount "$output"/brg-tmp/brg-client/proc    >/dev/null 2>&1
-	umount "$output"/brg-tmp/dev/pts            >/dev/null 2>&1
-	umount "$output"/brg-tmp/dev                >/dev/null 2>&1
-	umount "$output"/brg-tmp/sys                >/dev/null 2>&1
-	umount "$output"/brg-tmp/proc               >/dev/null 2>&1
-	mv "$output/brg-tmp/brg-client/"* "$output"
+	umount "$brg_tmp"/brg-client/dev/pts >/dev/null 2>&1
+	umount "$brg_tmp"/brg-client/dev     >/dev/null 2>&1
+	umount "$brg_tmp"/brg-client/sys     >/dev/null 2>&1
+	umount "$brg_tmp"/brg-client/proc    >/dev/null 2>&1
+	umount "$brg_tmp"/dev/pts            >/dev/null 2>&1
+	umount "$brg_tmp"/dev                >/dev/null 2>&1
+	umount "$brg_tmp"/sys                >/dev/null 2>&1
+	umount "$brg_tmp"/proc               >/dev/null 2>&1
+	mv "$brg_tmp/brg-client/"* "$output"
 	check "could not move into proper location"
 }
 

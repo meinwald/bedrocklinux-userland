@@ -68,12 +68,19 @@ EOF
 exit
 }
 
+# Output an error message and quit. Currently just prepends ERROR and outputs
+# to stderr but could potentially add something else such as color
+error() {
+	echo "ERROR: $@" >&2
+	exit 1
+}
+
 # If previous command did not return 0 - i.e., had an error - then print this
 # function's arguments and quit.
 check() {
 	if [ $? -ne 0 ]
 	then
-		echo "ERROR: $@"
+		error "$@"
 		exit 1
 	fi
 }
@@ -83,8 +90,8 @@ check() {
 ensure_second_arg() {
 	if [ -z "$2" ]
 	then
-		echo "Flag \"$1\" requires additional term"
-		exit
+		error "Flag \"$1\" requires additional term"
+		exit 1
 	fi
 }
 
@@ -111,12 +118,12 @@ mount_chroot() {
 
 clean() {
 	echo "brg: Removing temporary files"
-    if [ -n "$brg_tmp" ]; then
-        rm -r "$brg_tmp"
-	    check "could not remove files at: $output/brg-tmp"
-    else
-        echo '$brg_tmp variable is empty, which is likely an issue with the client script. You may need to delete temporary files manually' >&2
-    fi
+	if [ -n "$brg_tmp" ]; then
+		rm -r "$brg_tmp"
+		check "could not remove files at: $output/brg-tmp"
+	else
+		error '$brg_tmp variable is empty, which is likely an issue with the client script. You may need to delete temporary files manually'
+	fi
 }
 
 brconfig() {
@@ -316,8 +323,7 @@ fi
 # sanity checks
 if [ -n "$client" ] && [ -n "$output" ]
 then
-	echo "ERROR: Specify -c or -o, not both."
-	exit 1
+	error "Specify -c or -o, not both."
 fi
 
 if [ -n "$client" ] && [ -z "$output" ]
@@ -327,25 +333,21 @@ fi
 
 if [ -z "$client" ] && [ -z "$output" ]
 then
-	echo "ERROR: Either -c or -o must be specified"
-	exit 1
+	error "Either -c or -o must be specified"
 fi
 if [ -z "$client" ] && [ -n "$enable" ]
 then
-	echo "ERROR: Cannot use -e without -c"
-	exit 1
+	error "Cannot use -e without -c"
 fi
 # TODO: fakeroot?
 if [ $(id -u) != 0 ]
 then
-	echo "Acquiring a distro requires root"
-	exit 1
+	error "Acquiring a distro requires root"
 fi
 # ensure we can find distro-client-specific support functions
 if [ ! -r "$supportfuncs/$distro" ]
 then
-	echo "Could not find support functions at $supportfuncs/$distro"
-	exit 1
+	error "Could not find support functions at $supportfuncs/$distro"
 fi
 
 # Acquire the client

@@ -254,12 +254,6 @@ move() {
 	check "could not move into proper location"
 }
 
-clean() {
-	echo "brg: Removing temporary files"
-	rm -r "$output/brg-tmp"
-	check "could not remove files at: $output/brg-tmp"
-}
-
 config_apt() {
 	echo "brg: Configuring apt"
 	mkdir -p "$output/etc/apt/"
@@ -296,18 +290,6 @@ install_package() {
 	echo "brg: Installing specified packages"
 	chroot "$output" apt-get -y install $(echo "$packages" | sed 's/,/ /g')
 	check "could not install specified packages"
-}
-
-brconfig() {
-	echo "brg: Setting default Bedrock Linux config (disabled)"
-	echo "framework = default" > "/bedrock/etc/clients.d/${client}.conf.disabled"
-	check "could create default config"
-}
-
-enable() {
-	echo "brg: enabling client"
-	brs up $client
-	check "could not enable client"
 }
 
 list_release() {
